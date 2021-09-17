@@ -1,0 +1,356 @@
+---
+title: "Sankey Diagram - Switch College by YOY"
+author: "Jay Kim"
+date: "9/7/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r}
+#installed.packages("dplyr", "tidyr","readr","sjmisc","sjlabelled","networkD3","ggplot2","lubridate","RColorBrewer","extrafont")
+library(dplyr)
+library(readr)
+library(networkD3)
+library(sjmisc)
+library(tidyr)
+library(sjlabelled)
+library(ggplot2)
+library(RColorBrewer)
+library(extrafont)
+library(stringr)
+CP_with_Univ_gpa_v1 <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/MAJOR SWITCH/01 FILES/SwitchingMajors_LP/CP_with_Univ_gpa_v1.csv") %>%
+  filter(Cohort == 2016) %>% 
+  select(STU_ID, TermYear,TermYearid,Begin_col_desc, Stu_College,Deg_College,Deg_Desc) %>%  filter( str_detect(TermYear, "Fall")) %>% 
+  group_by(STU_ID) %>% mutate(FlowNumN = max(TermYearid)) %>% 
+  mutate(TermYear = case_when( TermYear != "" ~ paste0(sep="UWF", TermYear))) 
+# check total cohort
+addmargins(table(CP_with_Univ_gpa_v1$Begin_col_desc, CP_with_Univ_gpa_v1$TermYear))
+    
+# import data and select college information only
+head(CP_with_Univ_gpa_v1[,-1],10)
+
+```
+
+### Data Spread wide format
+
+```{r}
+make_cols <- CP_with_Univ_gpa_v1 %>% select(STU_ID, TermYear, Stu_College)%>% group_by(STU_ID) %>% 
+  tidyr::pivot_wider(names_from = TermYear, values_from = "Stu_College")
+
+rest_cols <- CP_with_Univ_gpa_v1 %>% select(STU_ID, Deg_College,Deg_Desc,FlowNumN ) %>% 
+  unique()
+
+long_data <- merge(make_cols, rest_cols, by="STU_ID", all = T) %>% 
+  mutate(UWF4YearFall = ifelse( is.na(UWF4YearFall) ,Deg_College, UWF4YearFall)) %>% 
+  select(2,3,4,5,7)
+
+head(long_data,10)
+```
+          
+    
+    
+  
+
+### add flow number with long format
+
+```{r}
+
+
+sankey_data <- long_data %>% 
+  mutate(
+    UWF1YearFall = case_when(UWF1YearFall != ""~ paste0(UWF1YearFall, sep="_1Y")),
+     UWF2YearFall = case_when(UWF2YearFall != ""~ paste0(UWF2YearFall, sep="_2Y")),
+     UWF3YearFall = case_when(UWF3YearFall != ""~ paste0(UWF3YearFall, sep="_3Y")),
+     UWF4YearFall = case_when(UWF4YearFall != ""~ paste0(UWF4YearFall, sep="_4Y")),
+    UWFDeg =case_when( Deg_Desc != "" ~ paste0(Deg_Desc, sep="END"))
+  )
+
+head(sankey_data,10)
+```
+
+### Check NA (means Dropped)
+
+```{r}
+# Chort 2014 to 2016
+freq_sankeydata <- sankey_data %>% 
+  group_by(UWF1YearFall,UWF2YearFall) %>% 
+  summarise(n =n()) %>% ungroup()
+
+head(freq_sankeydata,10)
+```
+
+### Create source and target for each flow
+
+```{r}
+
+
+flow_1to2 <- sankey_data %>% group_by(UWF1YearFall,UWF2YearFall) %>% summarise(n =n()) %>%
+  select( In= 1, Out= 2, 3)
+flow_1to2[is.na(flow_1to2$Out), "Out"] <- "NoDegree_2Y"
+
+head(flow_1to2,10)
+```
+
+```{r}
+
+flow_2to3 <- sankey_data %>% group_by( UWF2YearFall,UWF3YearFall ) %>% summarise(n =n()) %>% 
+  select( In= 1, Out= 2, 3) %>% filter(!is.na(In))
+
+flow_2to3[is.na(flow_2to3$Out), "Out"] <- "NoDegree_3Y"
+ 
+
+flow_3to4 <- sankey_data %>% group_by( UWF3YearFall,UWF4YearFall ) %>% summarise(n =n()) %>%  
+  select( In= 1, Out= 2, 3) %>% filter(!is.na(In)) 
+
+flow_3to4[is.na(flow_3to4$Out), "Out"] <- "NoDegree_4Y"
+
+flow_4to5 <- sankey_data %>% group_by( UWF4YearFall,UWFDeg ) %>% summarise(n =n()) %>%  
+  select( In= 1, Out= 2, 3) %>% filter(!is.na(In))
+
+flow_4to5[is.na(flow_4to5$Out), "Out"] <- "NoDegreeEND"
+ 
+flow_data <- rbind(flow_1to2, flow_2to3, flow_3to4, flow_4to5)
+
+
+colSums(is.na(flow_data))
+ 
+
+```
+
+### Create distint nodes and convert as.data.frame()
+
+
+```{r}
+
+nodes <- flow_data %>% 
+  select(In, Out) %>% 
+  pivot_longer(c("In","Out"), names_to = "col_name",
+               values_to = "name_match") %>% 
+  select(-1) %>% 
+  distinct() %>% 
+  mutate(name = str_sub( name_match, end=-4)) # omit the flow numners  # 29 nodes
+
+nodes <- as.data.frame(nodes)
+head(nodes)
+ 
+```
+
+### Creaet nodes Id and convert as.data.frame()
+
+```{r}
+plot_id <- flow_data %>% 
+  mutate( IDIn = match( In, nodes$name_match)-1,
+          IDOut = match(Out, nodes$name_match)-1,
+          Freq =n)
+plot_id <- as.data.frame(plot_id)
+head(plot_id,10)
+
+
+
+
+```
+
+
+### Adding node Colors
+
+```{r}
+
+node_colour <- 'd3.scaleOrdinal() .domain([ "Purple", "Lilac","Green",""Red", "Yellow","Grey","Blue","Orange"])
+                .rang(["#432473","#bb96ff","#54ab94","#e36d8b","bdb70d","#817f82","#3f77c4","#e48504"])'
+nodes <- nodes %>% 
+  mutate(ColourGroup = case_when(
+    name == "Col of Arts, Soc Sci and Human" ~"Blue",
+    name == "College of Business" ~"Purple",
+    name == "College of Ed and Prof Studies" ~"Lilac",
+    name == "College of Health" ~"Yellow",
+    name == "College of Sci and Engineering" ~"Red",
+    name == "Bachelor" ~"Green",
+    name == "NoDegree" ~"Grey",
+    name == "No College Designated" ~"Grey"
+  ))
+
+
+
+```
+
+
+### Create graph
+
+```{r}
+sankey_1 <- sankeyNetwork(Links = plot_id, Nodes = nodes,
+               Source = "IDIn", Target = "IDOut",
+               Value ="Freq", NodeID ="name",
+               sinksRight = FALSE, fontSize = 14, fontFamily = "Arial",
+               nodeWidth = 30, nodePadding = 20,
+               #colourScale = node_colour,
+               #NodeGroup = "ColourGroup",
+               height = 600, width = 800)
+
+
+sankey_1
+
+
+
+
+```
+
+### example for forceNetwork
+
+```{r}
+data(MisLinks)
+data(MisNodes)
+
+head(MisLinks)
+head(MisNodes) 
+
+forceNetwork(
+  Links =  plot_id, Nodes = nodes,
+  Source = "IDIn", Target = "IDOut",
+  Value = "Freq", NodeID = "name",
+  Group = "ColourGroup", opacityNoHover = 1,
+  opacity = 1, fontSize = 10
+)
+ 
+```
+
+
+
+
+### simpleNetwork/forceNetwork
+
+```{r}
+
+CP_with_Univ_gpa_v1_BIO <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/MAJOR SWITCH/01 FILES/SwitchingMajors_LP/CP_with_Univ_gpa_v1.csv") %>%
+  filter(Cohort == 2016 & Begin_deprt_code =="BY") %>% 
+  select(STU_ID, TermYear,TermYearid,Begin_CIP_desc, Stu_ProgramCIPDesc,Deg_ProgramCIPDesc,Deg_Desc) %>%  filter( str_detect(TermYear, "Fall")) %>% 
+  group_by(STU_ID) %>% mutate(FlowNumN = max(TermYearid)) %>% 
+  mutate(TermYear = case_when( TermYear != "" ~ paste0(sep="UWF", TermYear))) 
+CP_with_Univ_gpa_v1_BIO
+addmargins(table(CP_with_Univ_gpa_v1_BIO$Stu_ProgramCIPDesc, CP_with_Univ_gpa_v1_BIO$TermYear))
+
+CP_with_Univ_gpa_v1_ECP <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/MAJOR SWITCH/01 FILES/SwitchingMajors_LP/CP_with_Univ_gpa_v1.csv") %>%
+  filter(Cohort == 2016 & Begin_deprt_code =="ECP") %>% 
+  select(STU_ID, TermYear,TermYearid,Begin_CIP_desc, Stu_ProgramCIPDesc,Deg_ProgramCIPDesc,Deg_Desc) %>%  filter( str_detect(TermYear, "Fall")) %>% 
+  group_by(STU_ID) %>% mutate(FlowNumN = max(TermYearid)) %>% 
+  mutate(TermYear = case_when( TermYear != "" ~ paste0(sep="UWF", TermYear))) 
+CP_with_Univ_gpa_v1_ECP
+addmargins(table(CP_with_Univ_gpa_v1_ECP$Stu_ProgramCIPDesc, CP_with_Univ_gpa_v1_ECP$TermYear))
+
+
+```
+### Creating sankey data for BY
+
+```{r}
+colnames(CP_with_Univ_gpa_v1_BIO)
+make_cols_BY <- CP_with_Univ_gpa_v1_BIO %>% select(STU_ID, TermYear, Stu_ProgramCIPDesc)%>% group_by(STU_ID) %>% 
+  tidyr::pivot_wider(names_from = TermYear, values_from = "Stu_ProgramCIPDesc")
+
+rest_cols_BY <- CP_with_Univ_gpa_v1_BIO %>% select(STU_ID, Deg_ProgramCIPDesc,Deg_Desc,FlowNumN ) %>% 
+  unique()
+
+long_data_BY <- merge(make_cols_BY, rest_cols_BY, by="STU_ID", all = T) %>% 
+  mutate(UWF4YearFall = ifelse( is.na(UWF4YearFall) ,Deg_ProgramCIPDesc, UWF4YearFall)) %>% 
+  select(2,3,4,5,7) 
+
+unique(long_data_BY$UWF1YearFall)
+
+long_data_BY_1 <- long_data_BY %>% mutate( UWF2YearFall= 
+                                             ifelse( (UWF2YearFall != "Biology/Biological Sciences, General" & UWF2YearFall != "Marine Biology and Biological Oceanography" & UWF2YearFall != "Biomedical Sciences, General"), "OUT_BY", UWF2YearFall )) %>% 
+                mutate( UWF3YearFall= ifelse( (UWF3YearFall != "Biology/Biological Sciences, General" & UWF3YearFall != "Marine Biology and Biological Oceanography" & UWF3YearFall != "Biomedical Sciences, General"), "OUT_BY",UWF3YearFall )) %>% 
+                mutate( UWF4YearFall= ifelse( (UWF4YearFall != "Biology/Biological Sciences, General" & UWF4YearFall != "Marine Biology and Biological Oceanography" & UWF4YearFall != "Biomedical Sciences, General"), "OUT_BY",UWF4YearFall ))
+
+sankey_data_BY <- long_data_BY_1 %>% 
+  mutate(
+     UWF1YearFall = case_when(UWF1YearFall != ""~ paste0(UWF1YearFall, sep="_1Y")),
+     UWF2YearFall = case_when(UWF2YearFall != ""~ paste0(UWF2YearFall, sep="_2Y")),
+     UWF3YearFall = case_when(UWF3YearFall != ""~ paste0(UWF3YearFall, sep="_3Y")),
+     UWF4YearFall = case_when(UWF4YearFall != ""~ paste0(UWF4YearFall, sep="_4Y")),
+    UWFDeg =case_when( Deg_Desc != "" ~ paste0(Deg_Desc, sep="END"))
+  )
+
+freq_sankeydata_BY <- sankey_data_BY %>% 
+  group_by(UWF1YearFall,UWF2YearFall) %>% 
+  summarise(n =n()) %>% ungroup()
+ 
+flow_1to2 <- sankey_data_BY %>% group_by(UWF1YearFall,UWF2YearFall) %>%
+     summarise(n =n()) %>%
+  select( In= 1, Out= 2, 3)
+flow_1to2[is.na(flow_1to2$Out), "Out"] <- "NoDegree_2Y"
+
+
+flow_2to3 <- sankey_data_BY %>% group_by( UWF2YearFall,UWF3YearFall ) %>% summarise(n =n()) %>% 
+  select( In= 1, Out= 2, 3) %>% filter(!is.na(In))
+
+flow_2to3[is.na(flow_2to3$Out), "Out"] <- "NoDegree_3Y"
+ 
+
+flow_3to4 <- sankey_data_BY %>% group_by( UWF3YearFall,UWF4YearFall ) %>% summarise(n =n()) %>%  
+  select( In= 1, Out= 2, 3) %>% filter(!is.na(In)) 
+
+flow_3to4[is.na(flow_3to4$Out), "Out"] <- "NoDegree_4Y"
+
+flow_4to5 <- sankey_data_BY %>% group_by( UWF4YearFall,UWFDeg ) %>% summarise(n =n()) %>%  
+  select( In= 1, Out= 2, 3) %>% filter(!is.na(In))
+
+flow_4to5[is.na(flow_4to5$Out), "Out"] <- "NoDegreeEND"
+ 
+flow_data_BY <- rbind(flow_1to2, flow_2to3, flow_3to4, flow_4to5)
+```
+```{r}
+unique(sankey_data_BY$UWF1YearFall)
+```
+
+
+```{r}
+nodes_BY <- flow_data_BY %>% 
+  select(In, Out) %>% 
+  pivot_longer(c("In","Out"), names_to = "col_name",
+               values_to = "name_match") %>% 
+  select(-1) %>% 
+  distinct() %>% 
+  mutate(name = str_sub( name_match, end=-4)) # omit the flow numners  # 29 nodes
+
+plot_id_BY <- flow_data_BY %>% 
+  mutate( IDIn = match( In, nodes_BY$name_match)-1,
+          IDOut = match(Out, nodes_BY$name_match)-1,
+          Freq =n)
+plot_id_BY <- as.data.frame(plot_id_BY)
+
+nodes_BY <- as.data.frame(nodes_BY)
+
+sankey_BY <- sankeyNetwork(Links = plot_id_BY, Nodes = nodes_BY,
+               Source = "IDIn", Target = "IDOut",
+               Value ="Freq", NodeID ="name",
+               sinksRight = FALSE, fontSize = 14, fontFamily = "Arial",
+               nodeWidth = 30, nodePadding = 20,
+               #colourScale = node_colour,
+               #NodeGroup = "ColourGroup",
+               height = 600, width = 800)
+
+
+sankey_BY
+
+
+
+```
+
+
+```{r}
+URL <- paste0(
+        "https://cdn.rawgit.com/christophergandrud/networkD3/",
+        "master/JSONdata//flare.json")
+
+## Convert to list format
+Flare <- jsonlite::fromJSON(URL, simplifyDataFrame = FALSE)
+
+# Use subset of data for more readable diagram
+Flare$children = Flare$children[1:3]
+diagonalNetwork(List = Flare, fontSize = 10, opacity = 0.9)
+```
+
